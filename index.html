@@ -1,0 +1,662 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Performance Coaching Hub</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+html,body,#app{height:100%}
+body{background:#0a0e1a;color:#d0d0d0;font-family:Georgia,serif;overflow:hidden}
+::-webkit-scrollbar{width:6px}
+::-webkit-scrollbar-track{background:#0a0e1a}
+::-webkit-scrollbar-thumb{background:#2a2d3e;border-radius:3px}
+input,select,textarea,button{font-family:Georgia,serif}
+select option{background:#1a1f35;color:#d0d0d0}
+@keyframes spin{to{transform:rotate(360deg)}}
+.spinner{width:36px;height:36px;border:3px solid #2a2d3e;border-top-color:#c9a227;border-radius:50%;animation:spin .8s linear infinite;margin:0 auto 16px}
+</style>
+</head>
+<body>
+<div id="app"></div>
+
+<!-- Firebase SDK v9 compat -->
+<script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-firestore-compat.js"></script>
+
+<script>
+/* ── FIREBASE INIT ─────────────────────────────────────────────── */
+const firebaseConfig = {
+  apiKey: "AIzaSyCLdfCJobIWhwpNeYvwQJF8BlimK4O0Xdw",
+  authDomain: "performance-feedback-hub.firebaseapp.com",
+  projectId: "performance-feedback-hub",
+  storageBucket: "performance-feedback-hub.firebasestorage.app",
+  messagingSenderId: "1081895241147",
+  appId: "1:1081895241147:web:2fef222e17a3799754b09e",
+  measurementId: "G-JJ9XYJ1DSZ"
+};
+firebase.initializeApp(firebaseConfig);
+const db = firebase.firestore();
+
+/* ── CONSTANTS ─────────────────────────────────────────────────── */
+const TEAM=['Nathan','Joven','Red','Marj','Denise','Francesca'];
+const HEAD='Jeimar', HEAD_PIN_DEFAULT='0000', HEAD_PIN_KEY='__head__';
+const PHASES=[
+  {id:1,label:'Feedback Sent',icon:'📤'},
+  {id:2,label:'Session Scheduled',icon:'📅'},
+  {id:3,label:'Commitment Captured',icon:'🤝'},
+  {id:4,label:'Progress Monitored',icon:'📊'},
+];
+const STATUSES=['On Track','At Risk','Missed','Completed'];
+const SC={'On Track':'#22c55e','At Risk':'#f59e0b','Missed':'#ef4444','Completed':'#6366f1'};
+
+/* ── UTILS ─────────────────────────────────────────────────────── */
+const uid=()=>Date.now().toString(36)+Math.random().toString(36).slice(2);
+const today=()=>new Date().toISOString().slice(0,10);
+const esc=s=>String(s??'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+const $=id=>document.getElementById(id);
+const val=id=>{const el=$(id);return el?el.value:''};
+
+/* ── STATE ─────────────────────────────────────────────────────── */
+const S={
+  loading:true, loadErr:'',
+  screen:'login',
+  role:null, pinMember:null,
+  records:[], memberPins:{},
+  view:'list',
+  selId:null,
+  listFilter:'All',
+  detailTab:'overview',
+  editSection:null, _ev:undefined,
+  addingCommit:false,
+  progressCid:null,
+  newMember:TEAM[0],
+  pinModal:false,
+  pmMode:'manage', pmTarget:null,
+  pmErr:'', pmOk:'',
+};
+
+/* ── FIRESTORE STORAGE ─────────────────────────────────────────── */
+const loadAll = async () => {
+  try {
+    const [recSnap, pinsSnap] = await Promise.all([
+      db.collection('records').get(),
+      db.collection('config').doc('pins').get()
+    ]);
+    S.records = recSnap.docs.map(d => d.data());
+    // Sort by date ascending
+    S.records.sort((a,b)=>a.date<b.date?-1:1);
+    S.memberPins = pinsSnap.exists ? pinsSnap.data() : {};
+    S.loading = false;
+    render();
+  } catch(e) {
+    console.error(e);
+    S.loading = false;
+    S.loadErr = 'Could not connect to the database. Check your internet connection and try refreshing.';
+    render();
+  }
+};
+
+// Save a single record document to Firestore
+const saveRec = (record) => {
+  db.collection('records').doc(record.id).set(record)
+    .catch(e => console.error('Record save failed:', e));
+};
+
+// Save all pins to config/pins document
+const savePins = () => {
+  db.collection('config').doc('pins').set(S.memberPins)
+    .catch(e => console.error('Pins save failed:', e));
+};
+
+const headPin = () => S.memberPins[HEAD_PIN_KEY] || HEAD_PIN_DEFAULT;
+
+/* ── STYLE HELPERS ─────────────────────────────────────────────── */
+const goldBtn=()=>'background:#c9a227;color:#0a0e1a;border:none;border-radius:8px;padding:10px 20px;font-weight:800;font-size:14px;cursor:pointer';
+const ghostBtn=()=>'background:transparent;border:1px solid #2a2d3e;color:#888;border-radius:8px;padding:9px 16px;font-size:13px;cursor:pointer';
+const backBtn=()=>'background:none;border:none;color:#888;font-size:13px;cursor:pointer;padding:0';
+const inputSt=()=>'background:#1a1f35;border:1px solid #2a2d3e;color:#d0d0d0;border-radius:8px;padding:10px 14px;font-size:14px;width:100%;box-sizing:border-box';
+const taSt=()=>inputSt()+';min-height:100px;resize:vertical';
+const pinSt=()=>'background:#1a1f35;border:1px solid #2a2d3e;color:#c9a227;border-radius:8px;padding:12px 16px;font-size:24px;letter-spacing:8px;text-align:center;width:100%;box-sizing:border-box;display:block';
+const labelSt=()=>'font-size:13px;color:#888;font-weight:600;margin-bottom:6px;display:block';
+const bodyTxt=()=>'font-size:14px;color:#c0c0c0;line-height:1.8;margin:0;white-space:pre-wrap;word-wrap:break-word;word-break:break-word';
+const emptySt=()=>'padding:60px;text-align:center;color:#555;font-size:15px';
+const roleBtnSt=()=>'background:#1a1f35;border:1px solid #2a2d3e;color:#d0d0d0;border-radius:10px;padding:13px 20px;cursor:pointer;font-size:15px;font-weight:600;width:100%;text-align:left';
+
+const phaseBadge=(ph,lg=false)=>{
+  const p=PHASES[ph-1]; if(!p) return '';
+  return `<span style="background:#c9a22720;color:#c9a227;border:1px solid #c9a22750;border-radius:20px;padding:${lg?'5px 14px':'3px 10px'};font-size:${lg?13:11}px;font-weight:700">${p.icon} ${esc(p.label)}</span>`;
+};
+const statusBadge=(st,border=false)=>{
+  const c=SC[st]||'#888';
+  return `<span style="font-size:12px;padding:3px 10px;border-radius:20px;font-weight:700;white-space:nowrap;background:${c}22;color:${c};${border?`border:1px solid ${c}55`:''}">${esc(st)}</span>`;
+};
+const sideBtn=(icon,lbl,active,fn)=>
+  `<button onclick="${fn}" style="background:${active?'#c9a22715':'transparent'};border:none;border-left:3px solid ${active?'#c9a227':'transparent'};color:${active?'#c9a227':'#888'};padding:10px 20px;text-align:left;cursor:pointer;font-size:14px;font-weight:${active?700:500};display:flex;align-items:center;gap:10px;width:100%">${icon} ${esc(lbl)}</button>`;
+
+/* ── RENDER ────────────────────────────────────────────────────── */
+const render=()=>{
+  $('app').innerHTML=buildHtml();
+  if(S.screen==='member-pin'||S.screen==='head-pin'){
+    setTimeout(()=>{ const el=$('pin-in'); if(el) el.focus(); },20);
+  }
+};
+
+const buildHtml=()=>{
+  if(S.loading)  return loadingHtml();
+  if(S.loadErr)  return errorHtml(S.loadErr);
+  if(S.screen==='login')       return loginHtml();
+  if(S.screen==='pick-member') return pickMemberHtml();
+  if(S.screen==='member-pin')  return memberPinHtml();
+  if(S.screen==='head-pin')    return headPinHtml();
+  return appHtml();
+};
+
+/* ── LOADING / ERROR ───────────────────────────────────────────── */
+const loadingHtml=()=>
+  `<div style="display:flex;align-items:center;justify-content:center;height:100%;background:#0a0e1a">
+   <div style="text-align:center">
+     <div class="spinner"></div>
+     <div style="font-size:22px;font-weight:900;color:#c9a227;letter-spacing:2px;margin-bottom:8px">⚡ PCH</div>
+     <p style="font-size:13px;color:#666">Connecting to database…</p>
+   </div></div>`;
+
+const errorHtml=(msg)=>
+  `<div style="display:flex;align-items:center;justify-content:center;height:100%;background:#0a0e1a">
+   <div style="background:#0f1322;border:1px solid #ef444440;border-radius:16px;padding:40px 48px;width:420px;text-align:center">
+     <div style="font-size:40px;margin-bottom:12px">⚠️</div>
+     <h2 style="font-size:20px;font-weight:900;color:#ef4444;margin:0 0 12px">Connection Error</h2>
+     <p style="font-size:13px;color:#888;line-height:1.6;margin-bottom:20px">${esc(msg)}</p>
+     <button onclick="location.reload()" style="${goldBtn()};width:100%">Try Again</button>
+   </div></div>`;
+
+/* ── LOGIN SCREENS ─────────────────────────────────────────────── */
+const card=(inner)=>
+  `<div style="display:flex;align-items:center;justify-content:center;height:100%;background:#0a0e1a">
+   <div style="background:#0f1322;border:1px solid #1e2236;border-radius:16px;padding:40px 48px;width:380px;text-align:center">${inner}</div></div>`;
+
+const loginHtml=()=>card(`
+  <div style="font-size:48px;margin-bottom:8px">⚡</div>
+  <h1 style="font-size:26px;font-weight:900;color:#c9a227;margin:0 0 8px;line-height:1.2">Performance<br>Coaching Hub</h1>
+  <p style="font-size:13px;color:#666;margin:0 0 4px">Analytics &amp; Insights Data Team</p>
+  <div style="display:flex;flex-direction:column;gap:12px;margin-top:28px">
+    <p style="font-size:13px;color:#888;text-align:left">I am…</p>
+    <button onclick="A.pickMember()" style="${roleBtnSt()}">👤 A Team Member</button>
+    <button onclick="A.goHeadPin()" style="${roleBtnSt()}">🎯 Jeimar (Head of Analytics)</button>
+  </div>`);
+
+const pickMemberHtml=()=>card(`
+  <button onclick="A.back('login')" style="${backBtn()}">← Back</button>
+  <h2 style="font-size:24px;font-weight:900;color:#c9a227;margin:12px 0 20px">Select Your Name</h2>
+  <div style="display:flex;flex-direction:column;gap:10px">
+    ${TEAM.map(m=>`<button onclick="A.tryMember('${m}')" style="${roleBtnSt()};display:flex;justify-content:space-between;align-items:center">
+      <span>${esc(m)}</span>
+      <span style="font-size:11px;color:${S.memberPins[m]?'#c9a227':'#444'}">${S.memberPins[m]?'🔒 PIN set':'🔓 No PIN'}</span>
+    </button>`).join('')}
+  </div>`);
+
+const memberPinHtml=()=>card(`
+  <button onclick="A.back('pick-member')" style="${backBtn()}">← Back</button>
+  <div style="width:48px;height:48px;border-radius:50%;background:#c9a227;color:#0a0e1a;display:flex;align-items:center;justify-content:center;font-weight:900;font-size:22px;margin:16px auto 0">${esc((S.pinMember||'')[0]||'?')}</div>
+  <h2 style="font-size:24px;font-weight:900;color:#c9a227;margin:12px 0 0">${esc(S.pinMember||'')}</h2>
+  <p style="font-size:13px;color:#666;margin:4px 0 0">Enter your PIN to continue</p>
+  <input id="pin-in" type="password" maxlength="6" autocomplete="off"
+    onkeydown="if(event.key==='Enter')A.submitMemberPin()" style="${pinSt()};margin-top:16px;margin-bottom:4px" placeholder="••••">
+  <div id="pin-err" style="color:#ef4444;font-size:13px;margin-top:6px;min-height:20px"></div>
+  <button onclick="A.submitMemberPin()" style="${goldBtn()};margin-top:8px;width:100%">Unlock</button>`);
+
+const headPinHtml=()=>card(`
+  <button onclick="A.back('login')" style="${backBtn()}">← Back</button>
+  <h2 style="font-size:24px;font-weight:900;color:#c9a227;margin:12px 0 0">Head Access</h2>
+  <p style="font-size:13px;color:#666;margin:4px 0 0">Enter your PIN to continue</p>
+  <input id="pin-in" type="password" maxlength="6" autocomplete="off"
+    onkeydown="if(event.key==='Enter')A.submitHeadPin()" style="${pinSt()};margin-top:16px;margin-bottom:4px" placeholder="••••">
+  <div id="pin-err" style="color:#ef4444;font-size:13px;margin-top:6px;min-height:20px"></div>
+  <button onclick="A.submitHeadPin()" style="${goldBtn()};margin-top:8px;width:100%">Unlock</button>
+  <p style="font-size:11px;color:#555;margin-top:10px">Default PIN: 0000</p>`);
+
+/* ── MAIN APP SHELL ────────────────────────────────────────────── */
+const appHtml=()=>{
+  const isHead=S.role==='head';
+  const name=isHead?HEAD:S.role;
+  const recs=isHead?S.records:S.records.filter(r=>r.member===S.role);
+  let main='';
+  if(S.view==='new'&&isHead) main=newFeedbackHtml();
+  else if(S.view==='detail'&&S.selId){
+    const r=S.records.find(r=>r.id===S.selId);
+    main=r?detailHtml(r,isHead):`<div style="${emptySt()}">Record not found.</div>`;
+  } else main=listHtml(recs,isHead);
+  return `<div style="display:flex;height:100%;background:#0a0e1a;color:#d0d0d0;overflow:hidden">
+  ${S.pinModal?pinModalHtml(isHead):''}
+  <aside style="width:220px;background:#0f1322;border-right:1px solid #1e2236;display:flex;flex-direction:column;justify-content:space-between;padding:24px 0;flex-shrink:0">
+    <div>
+      <div style="font-size:20px;font-weight:900;color:#c9a227;padding:0 20px;letter-spacing:2px">⚡ PCH</div>
+      <nav style="margin-top:32px;display:flex;flex-direction:column;gap:4px">
+        ${sideBtn('📋','Records',S.view==='list'&&!S.pinModal,'A.goList()')}
+        ${isHead?sideBtn('➕','New Feedback',S.view==='new','A.goNew()'):''}
+        ${sideBtn('🔐',isHead?'Manage PINs':'My PIN',false,'A.openPins()')}
+      </nav>
+    </div>
+    <div>
+      <div style="display:flex;align-items:center;gap:10px;padding:16px 20px;border-top:1px solid #1e2236">
+        <div style="width:36px;height:36px;border-radius:50%;background:#c9a227;color:#0a0e1a;display:flex;align-items:center;justify-content:center;font-weight:900;font-size:16px;flex-shrink:0">${esc(name[0])}</div>
+        <div>
+          <div style="font-size:13px;font-weight:700">${esc(name)}</div>
+          <div style="font-size:11px;color:#888">${isHead?'Head · Analytics':'Team Member'}</div>
+        </div>
+      </div>
+      <button onclick="A.signOut()" style="background:none;border:none;color:#555;cursor:pointer;font-size:12px;padding:8px 20px;text-align:left;width:100%">Sign Out</button>
+    </div>
+  </aside>
+  <main style="flex:1;overflow-y:auto">${main}</main>
+</div>`;
+};
+
+/* ── LIST VIEW ─────────────────────────────────────────────────── */
+const listHtml=(recs,isHead)=>{
+  const filters=['All',...PHASES.map(p=>p.label)];
+  const chips=filters.map(f=>
+    `<button onclick="A.setFilter('${esc(f)}')" style="background:${S.listFilter===f?'#c9a22720':'transparent'};border:1px solid ${S.listFilter===f?'#c9a22755':'#2a2d3e'};color:${S.listFilter===f?'#c9a227':'#666'};border-radius:20px;padding:5px 14px;font-size:12px;cursor:pointer">${esc(f)}</button>`
+  ).join('');
+  const filtered=S.listFilter==='All'?recs:recs.filter(r=>PHASES[r.phase-1]?.label===S.listFilter);
+  let cards='';
+  if(!filtered.length){
+    const msg=!recs.length?(isHead?"No feedback records yet. Click '+ New Feedback' to begin.":'No feedback records for you yet.'):'No records match this filter.';
+    cards=`<div style="${emptySt()}">${esc(msg)}</div>`;
+  } else cards=filtered.slice().reverse().map(r=>recordCard(r,isHead)).join('');
+  return `<div style="padding:32px 40px">
+  <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:24px">
+    <div>
+      <h2 style="font-size:26px;font-weight:900;color:#c9a227;margin:0 0 4px">Coaching Records</h2>
+      <p style="font-size:13px;color:#666;margin:0">${recs.length} record${recs.length!==1?'s':''} ${isHead?'total':'for you'}</p>
+    </div>
+    ${isHead?`<button onclick="A.goNew()" style="${goldBtn()}">+ New Feedback</button>`:''}
+  </div>
+  <div style="display:flex;gap:8px;margin-bottom:24px;flex-wrap:wrap">${chips}</div>
+  <div style="display:flex;flex-direction:column;gap:14px">${cards}</div>
+</div>`;
+};
+
+const recordCard=(r,isHead)=>{
+  let st=null;
+  if(r.commitments?.length){
+    if(r.commitments.every(c=>c.status==='Completed')) st='Completed';
+    else if(r.commitments.some(c=>c.status==='Missed')) st='Missed';
+    else if(r.commitments.some(c=>c.status==='At Risk')) st='At Risk';
+    else st='On Track';
+  }
+  const flatFb=r.feedback.replace(/\s*\n\s*/g,' ');
+  const snip=flatFb.length>120?flatFb.slice(0,120)+'…':flatFb;
+  return `<div onclick="A.openRec('${r.id}')" style="background:#0f1322;border:1px solid #1e2236;border-radius:12px;padding:20px 24px;cursor:pointer">
+  <div style="display:flex;justify-content:space-between;align-items:flex-start">
+    <div>
+      ${isHead?`<div style="font-size:12px;color:#c9a227;font-weight:700;text-transform:uppercase;letter-spacing:1px;margin-bottom:4px">${esc(r.member)}</div>`:''}
+      <div style="font-size:17px;font-weight:700;color:#e0e0e0;margin-bottom:2px">${esc(r.title)}</div>
+      <div style="font-size:12px;color:#555;margin-bottom:8px">${esc(r.date)}</div>
+    </div>
+    <div style="display:flex;flex-direction:column;align-items:flex-end;gap:6px">
+      ${phaseBadge(r.phase)}
+      ${st?statusBadge(st,true):''}
+    </div>
+  </div>
+  <p style="font-size:13px;color:#888;margin:0;line-height:1.6">${esc(snip)}</p>
+  <div style="display:flex;gap:16px;margin-top:10px;font-size:12px;color:#666">
+    ${r.memberResponse?'<span>💬 Member responded</span>':''}
+    ${r.commitments?.length?`<span>🤝 ${r.commitments.length} commitment${r.commitments.length>1?'s':''}</span>`:''}
+    ${r.sessionNotes?'<span>📝 Session notes</span>':''}
+  </div>
+</div>`;
+};
+
+/* ── DETAIL VIEW ───────────────────────────────────────────────── */
+const detailHtml=(r,isHead)=>{
+  const tabs=['overview','session','commitments','progress'];
+  const tabBtns=tabs.map(t=>
+    `<button onclick="A.tab('${t}')" style="background:none;border:none;border-bottom:2px solid ${S.detailTab===t?'#c9a227':'transparent'};color:${S.detailTab===t?'#c9a227':'#666'};padding:10px 20px;cursor:pointer;font-size:14px;font-weight:600">${t[0].toUpperCase()+t.slice(1)}</button>`
+  ).join('');
+  const stepper=PHASES.map((p,i)=>{
+    const done=r.phase>=p.id;
+    return `<div style="display:flex;align-items:center;flex:1">
+      <div style="text-align:center;flex:1">
+        <div style="width:36px;height:36px;border-radius:50%;background:${done?'#c9a22722':'#1a1f35'};border:2px solid ${done?'#c9a227':'#2a2d3e'};display:flex;align-items:center;justify-content:center;font-size:${done?14:18}px;margin:0 auto;color:${done?'#c9a227':'inherit'}">${done?'✓':p.icon}</div>
+        <div style="font-size:10px;margin-top:4px;color:${done?'#c9a227':'#666'}">${esc(p.label)}</div>
+      </div>
+      ${i<3?`<div style="flex:1;height:2px;background:${r.phase>p.id?'#c9a227':'#2a2d3e'}"></div>`:''}
+    </div>`;
+  }).join('');
+  let tabContent='';
+  if(S.detailTab==='overview')         tabContent=detailOverview(r,isHead);
+  else if(S.detailTab==='session')     tabContent=detailSession(r,isHead);
+  else if(S.detailTab==='commitments') tabContent=detailCommits(r,isHead);
+  else                                 tabContent=detailProgress(r,isHead);
+  return `<div style="padding:32px 40px;max-width:860px">
+  <button onclick="A.goList()" style="${backBtn()}">← All Records</button>
+  <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-top:16px;margin-bottom:8px">
+    <div>
+      <h2 style="font-size:26px;font-weight:900;color:#c9a227;margin:0 0 4px">${esc(r.title)}</h2>
+      <p style="font-size:13px;color:#666;margin:0">${isHead?esc(r.member)+' · ':''}${esc(r.date)}</p>
+    </div>
+    ${phaseBadge(r.phase,true)}
+  </div>
+  <div style="display:flex;align-items:flex-start;padding:20px 0;margin-bottom:8px">${stepper}</div>
+  ${isHead&&r.phase<4?`<button onclick="A.advance('${r.id}')" style="${goldBtn()};margin-bottom:20px">Advance to: ${esc(PHASES[r.phase]?.label||'')} ${PHASES[r.phase]?.icon||''}</button>`:''}
+  <div style="display:flex;border-bottom:1px solid #1e2236">${tabBtns}</div>
+  <div style="padding:24px 0">${tabContent}</div>
+</div>`;
+};
+
+const box=(title,editBtn,body)=>
+  `<div style="background:#0f1322;border:1px solid #1e2236;border-radius:12px;padding:20px 24px;margin-bottom:16px">
+   <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
+     <h3 style="font-size:15px;font-weight:700;color:#c9a227;margin:0">${title}</h3>${editBtn||''}
+   </div>${body}</div>`;
+
+const editArea=(id,v,saveFn,cancelFn)=>
+  `<textarea id="${id}" oninput="S._ev=this.value" style="${taSt()}">${esc(v)}</textarea>
+   <div style="display:flex;gap:8px;margin-top:8px">
+     <button onclick="${saveFn}" style="${goldBtn()}">Save</button>
+     <button onclick="${cancelFn}" style="${ghostBtn()}">Cancel</button>
+   </div>`;
+
+const detailOverview=(r,isHead)=>{
+  const efb=S.editSection==='feedback', emr=S.editSection==='memberResponse';
+  const fbBody=efb
+    ? editArea('ea',S._ev??r.feedback,`A.saveEdit('${r.id}','feedback')`,'A.cancelEdit()')
+    : `<p style="${bodyTxt()}">${esc(r.feedback)}</p>`;
+  let mrBody='';
+  if(r.memberResponse) mrBody=`<p style="${bodyTxt()}">${esc(r.memberResponse)}</p>`;
+  else if(!isHead&&S.role===r.member)
+    mrBody=emr
+      ? editArea('ea',S._ev??'',`A.saveEdit('${r.id}','memberResponse')`,'A.cancelEdit()')
+      : `<button onclick="A.startEdit('${r.id}','memberResponse','')" style="${ghostBtn()}">Add your perspective…</button>`;
+  else mrBody=`<p style="color:#555;font-size:14px">No response yet.</p>`;
+  return box('📤 Performance Feedback',
+    isHead&&!efb?`<button onclick="A.startEdit('${r.id}','feedback',\`${r.feedback.replace(/`/g,"'")}\`)" style="${ghostBtn()}">Edit</button>`:'',
+    fbBody)+
+  box("💬 Member's Side",'',mrBody);
+};
+
+const detailSession=(r,isHead)=>{
+  const ed=S.editSection==='sessionDate', en=S.editSection==='sessionNotes';
+  const dateBody=ed
+    ? `<input id="ea" type="date" value="${esc(S._ev??r.sessionDate??'')}" oninput="S._ev=this.value" style="${inputSt()}">
+       <div style="display:flex;gap:8px;margin-top:8px"><button onclick="A.saveEdit('${r.id}','sessionDate')" style="${goldBtn()}">Save</button><button onclick="A.cancelEdit()" style="${ghostBtn()}">Cancel</button></div>`
+    : `<p style="${bodyTxt()}">${esc(r.sessionDate||(isHead?'Not scheduled yet.':'Session not scheduled yet.'))}</p>`;
+  const notesBody=en
+    ? editArea('ea',S._ev??r.sessionNotes??'',`A.saveEdit('${r.id}','sessionNotes')`,'A.cancelEdit()')
+    : `<p style="${bodyTxt()}">${esc(r.sessionNotes||(isHead?'Add session notes…':'No notes yet.'))}</p>`;
+  return box('📅 Session Details',
+    isHead&&!ed?`<button onclick="A.startEdit('${r.id}','sessionDate','${esc(r.sessionDate||'')}')" style="${ghostBtn()}">Edit</button>`:'',
+    dateBody)+
+  box('📝 Session Minutes / Context',
+    isHead&&!en?`<button onclick="A.startEdit2('${r.id}','sessionNotes')" style="${ghostBtn()}">Edit</button>`:'',
+    notesBody);
+};
+
+const detailCommits=(r,isHead)=>{
+  const cs=r.commitments||[];
+  const addForm=S.addingCommit&&isHead?`
+<div style="background:#1a1f35;border:1px solid #2a2d3e;border-radius:10px;padding:16px;margin-bottom:16px">
+  <textarea id="ct" placeholder="Describe the commitment…" style="${taSt()};margin-bottom:8px"></textarea>
+  <div style="display:flex;gap:8px;align-items:center">
+    <input id="cd" type="date" style="${inputSt()};flex:1">
+    <button onclick="A.addCommit('${r.id}')" style="${goldBtn()}">Save</button>
+    <button onclick="A.cancelCommit()" style="${ghostBtn()}">Cancel</button>
+  </div>
+</div>`:'';
+  const list=!cs.length&&!S.addingCommit
+    ? `<p style="color:#555;font-size:14px">No commitments logged yet.</p>`
+    : cs.map(c=>{
+        const col=SC[c.status]||'#888';
+        const stEl=isHead
+          ? `<select onchange="A.setCStatus('${r.id}','${c.id}',this.value)" style="background:#1a1f35;border:1px solid #2a2d3e;color:#c9a227;border-radius:8px;padding:4px 8px;font-size:12px;cursor:pointer;flex-shrink:0">${STATUSES.map(s=>`<option value="${s}"${s===c.status?' selected':''}>${esc(s)}</option>`).join('')}</select>`
+          : `<span style="font-size:12px;padding:3px 10px;border-radius:20px;font-weight:700;white-space:nowrap;background:${col}22;color:${col};flex-shrink:0">${esc(c.status)}</span>`;
+        return `<div style="background:#1a1f35;border:1px solid #2a2d3e;border-radius:10px;padding:14px 18px;margin-bottom:10px">
+  <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:8px">
+    <p style="${bodyTxt()};margin:0;flex:1">${esc(c.text)}</p>${stEl}
+  </div>
+  ${c.dueDate?`<p style="font-size:12px;color:#888;margin:4px 0 0">Due: ${esc(c.dueDate)}</p>`:''}
+</div>`;
+      }).join('');
+  return `<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px">
+  <h3 style="font-size:15px;font-weight:700;color:#c9a227;margin:0">🤝 Commitments</h3>
+  ${isHead&&!S.addingCommit?`<button onclick="A.startCommit()" style="${ghostBtn()}">+ Add Commitment</button>`:''}
+</div>${addForm}${list}`;
+};
+
+const detailProgress=(r,isHead)=>{
+  const cs=r.commitments||[];
+  if(!cs.length) return `<p style="color:#555;font-size:14px">No commitments to track yet.</p>`;
+  return `<h3 style="font-size:15px;font-weight:700;color:#c9a227;margin:0 0 16px">📊 Progress Log</h3>`+
+  cs.map(c=>{
+    const col=SC[c.status]||'#888';
+    const ups=c.updates||[];
+    const tl=!ups.length
+      ? `<p style="color:#555;font-size:13px">No updates yet.</p>`
+      : ups.map(u=>`<div style="margin-bottom:12px;padding-bottom:12px;border-bottom:1px solid #1e2236">
+  <div style="font-size:12px;color:#c9a227;font-weight:600">${esc(u.author)} · ${esc(u.date)}</div>
+  <div style="font-size:14px;color:#d0d0d0;margin-top:2px;white-space:pre-wrap;word-wrap:break-word">${esc(u.note)}</div>
+</div>`).join('');
+    const noteArea=S.progressCid===c.id
+      ? `<textarea id="pn" placeholder="Add a progress note…" style="${taSt()}"></textarea>
+         <div style="display:flex;gap:8px;margin-top:8px">
+           <button onclick="A.postNote('${r.id}','${c.id}')" style="${goldBtn()}">Post</button>
+           <button onclick="A.cancelNote()" style="${ghostBtn()}">Cancel</button>
+         </div>`
+      : `<button onclick="A.selNote('${c.id}')" style="${ghostBtn()}">+ Add Update</button>`;
+    return `<div style="margin-bottom:28px">
+  <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
+    <p style="${bodyTxt()};margin:0;font-weight:600">${esc(c.text)}</p>
+    <span style="font-size:12px;padding:3px 10px;border-radius:20px;font-weight:700;white-space:nowrap;background:${col}22;color:${col};flex-shrink:0;margin-left:8px">${esc(c.status)}</span>
+  </div>
+  <div style="border-left:2px solid #2a2d3e;padding-left:16px;margin-bottom:12px">${tl}</div>
+  ${noteArea}
+</div>`;
+  }).join('');
+};
+
+/* ── NEW FEEDBACK ───────────────────────────────────────────────── */
+const newFeedbackHtml=()=>
+  `<div style="padding:32px 40px;max-width:680px">
+  <h2 style="font-size:26px;font-weight:900;color:#c9a227;margin:0 0 4px">New Performance Feedback</h2>
+  <p style="font-size:13px;color:#666;margin:0 0 24px">This will initiate a coaching record for the selected team member.</p>
+  <div style="display:flex;flex-direction:column;gap:18px">
+    <div><label style="${labelSt()}">Team Member</label>
+      <select id="nf-member" style="${inputSt()}">
+        ${TEAM.map(m=>`<option value="${m}"${m===S.newMember?' selected':''}>${esc(m)}</option>`).join('')}
+      </select></div>
+    <div><label style="${labelSt()}">Title / Topic</label>
+      <input id="nf-title" type="text" placeholder="e.g., Q2 Report Delay – Missed Deadline" style="${inputSt()}"></div>
+    <div><label style="${labelSt()}">Date</label>
+      <input id="nf-date" type="date" value="${today()}" style="${inputSt()}"></div>
+    <div><label style="${labelSt()}">Feedback</label>
+      <textarea id="nf-text" placeholder="Describe the performance concern, specific incident, and impact…" style="${taSt()};min-height:140px"></textarea></div>
+    <div style="display:flex;gap:12px">
+      <button onclick="A.submitFeedback()" style="${goldBtn()}">Send Feedback 📤</button>
+      <button onclick="A.goList()" style="${ghostBtn()}">Cancel</button>
+    </div>
+  </div>
+</div>`;
+
+/* ── PIN MODAL ──────────────────────────────────────────────────── */
+const pinModalHtml=(isHead)=>{
+  const tabs=isHead?`<div style="display:flex;border-bottom:1px solid #1e2236;margin-bottom:20px">
+  <button onclick="A.pmTab('manage')" style="background:none;border:none;border-bottom:2px solid ${S.pmMode==='manage'?'#c9a227':'transparent'};color:${S.pmMode==='manage'?'#c9a227':'#666'};padding:10px 20px;cursor:pointer;font-size:14px;font-weight:600">Team PINs</button>
+  <button onclick="A.pmTab('my-pin')" style="background:none;border:none;border-bottom:2px solid ${S.pmMode==='my-pin'?'#c9a227':'transparent'};color:${S.pmMode==='my-pin'?'#c9a227':'#666'};padding:10px 20px;cursor:pointer;font-size:14px;font-weight:600">My PIN</button>
+</div>`:'';
+  let body='';
+  if(isHead&&S.pmMode==='manage'){
+    body=`<p style="font-size:13px;color:#888;margin-bottom:16px">Set or clear PINs for team members.</p>`+
+    TEAM.map(m=>`<div style="background:#1a1f35;border:1px solid #2a2d3e;border-radius:10px;padding:14px 18px;margin-bottom:10px;display:flex;justify-content:space-between;align-items:center">
+  <div style="display:flex;align-items:center;gap:10px">
+    <div style="width:30px;height:30px;border-radius:50%;background:#c9a227;color:#0a0e1a;display:flex;align-items:center;justify-content:center;font-weight:900;font-size:13px">${m[0]}</div>
+    <div>
+      <div style="font-size:14px;font-weight:700">${esc(m)}</div>
+      <div style="font-size:11px;color:${S.memberPins[m]?'#c9a227':'#555'}">${S.memberPins[m]?'🔒 PIN protected':'🔓 No PIN'}</div>
+    </div>
+  </div>
+  <div style="display:flex;gap:8px">
+    <button onclick="A.pmSetMember('${m}')" style="${ghostBtn()}">${S.memberPins[m]?'Reset':'Set PIN'}</button>
+    ${S.memberPins[m]?`<button onclick="A.pmClear('${m}')" style="${ghostBtn()};color:#ef4444;border-color:#ef444455">Clear</button>`:''}
+  </div>
+</div>`).join('')+(S.pmOk?`<p style="color:#22c55e;font-size:13px;margin-top:12px">✓ ${esc(S.pmOk)}</p>`:'');
+  } else if(isHead&&S.pmMode==='set-member'){
+    body=`<button onclick="A.pmBack()" style="${backBtn()}">← Back</button>
+<h3 style="font-size:15px;font-weight:700;color:#c9a227;margin:12px 0 16px">Set PIN for ${esc(S.pmTarget)}</h3>`+
+    pinFields(false,'A.pmSaveMember()');
+  } else if(isHead&&S.pmMode==='my-pin'){
+    body=`<p style="font-size:13px;color:#888;margin-bottom:16px">Change your personal sign-in PIN. Current PIN is required.</p>`+
+    pinFields(true,'A.pmSaveHead()');
+  } else {
+    const has=!!S.memberPins[S.role];
+    body=`<p style="font-size:13px;color:#888;margin-bottom:20px">${has?'Your account is PIN-protected. Change or remove your PIN below.':'Your account has no PIN. Set one to protect your coaching records.'}</p>`+
+    pinFields(has,'A.pmSaveSelf()')+
+    (has?`<div style="margin-top:20px;padding-top:16px;border-top:1px solid #1e2236">
+  <p style="font-size:13px;color:#888;margin-bottom:10px">Remove PIN protection:</p>
+  <label style="${labelSt()}">Enter current PIN to confirm removal</label>
+  <input id="pm-del" type="password" maxlength="6" autocomplete="off" style="${pinSt()};font-size:18px;margin-bottom:10px" placeholder="••••">
+  <button onclick="A.pmRemove()" style="${ghostBtn()};color:#ef4444;border-color:#ef444455">Remove PIN</button>
+</div>`:'');
+  }
+  return `<div style="position:fixed;inset:0;background:rgba(0,0,0,.7);display:flex;align-items:center;justify-content:center;z-index:100" onclick="A.closePins()">
+<div style="background:#0f1322;border:1px solid #1e2236;border-radius:16px;padding:32px 36px;width:500px;max-width:90vw;max-height:85vh;overflow-y:auto" onclick="event.stopPropagation()">
+  <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:20px">
+    <h2 style="font-size:20px;font-weight:900;color:#c9a227;margin:0">${isHead?'🔐 Manage PINs':'🔐 My PIN'}</h2>
+    <button onclick="A.closePins()" style="${ghostBtn()};padding:4px 10px">✕</button>
+  </div>
+  ${tabs}${body}
+</div></div>`;
+};
+
+const pinFields=(showCurrent,saveFn)=>
+  `${showCurrent?`<label style="${labelSt()}">Current PIN</label>
+<input id="pm-cur" type="password" maxlength="6" autocomplete="off" style="${pinSt()};font-size:18px;margin-bottom:12px" placeholder="••••">`:''}
+<label style="${labelSt()}">New PIN (4–6 digits)</label>
+<input id="pm-new" type="password" maxlength="6" autocomplete="off" style="${pinSt()};font-size:18px;margin-bottom:12px" placeholder="••••">
+<label style="${labelSt()}">Confirm PIN</label>
+<input id="pm-con" type="password" maxlength="6" autocomplete="off" onkeydown="if(event.key==='Enter'){${saveFn}}" style="${pinSt()};font-size:18px" placeholder="••••">
+${S.pmErr?`<p style="color:#ef4444;font-size:13px;margin-top:8px">⚠ ${esc(S.pmErr)}</p>`:''}
+${S.pmOk?`<p style="color:#22c55e;font-size:13px;margin-top:8px">✓ ${esc(S.pmOk)}</p>`:''}
+<div style="display:flex;gap:10px;margin-top:16px;flex-wrap:wrap">
+  <button onclick="${saveFn}" style="${goldBtn()}">Save PIN</button>
+  <button onclick="A.pmBack()" style="${ghostBtn()}">Cancel</button>
+</div>`;
+
+/* ── ACTIONS ────────────────────────────────────────────────────── */
+const A={
+  pickMember(){ S.screen='pick-member'; render(); },
+  goHeadPin(){  S.screen='head-pin';   render(); },
+  back(to){     S.screen=to;           render(); },
+
+  tryMember(m){
+    S.pinMember=m;
+    if(!S.memberPins[m]){ S.role=m; S.screen='app'; render(); }
+    else { S.screen='member-pin'; render(); }
+  },
+  submitMemberPin(){
+    const v=val('pin-in');
+    if(v===S.memberPins[S.pinMember]){ S.role=S.pinMember; S.screen='app'; render(); }
+    else { const e=$('pin-err'); if(e) e.textContent='Incorrect PIN. Try again.'; }
+  },
+  submitHeadPin(){
+    const v=val('pin-in');
+    if(v===headPin()){ S.role='head'; S.screen='app'; render(); }
+    else { const e=$('pin-err'); if(e) e.textContent='Incorrect PIN'; }
+  },
+
+  signOut(){ S.role=null; S.screen='login'; S.view='list'; S.selId=null; S.pinModal=false; render(); },
+  goList(){  S.view='list'; S.selId=null; S.editSection=null; S.addingCommit=false; S.progressCid=null; render(); },
+  goNew(){   S.view='new';  S.newMember=TEAM[0]; render(); },
+  setFilter(f){ S.listFilter=f; render(); },
+
+  openRec(id){ S.selId=id; S.view='detail'; S.detailTab='overview'; S.editSection=null; S.addingCommit=false; S.progressCid=null; S._ev=undefined; render(); },
+  tab(t){ S.detailTab=t; S.editSection=null; S.addingCommit=false; S.progressCid=null; S._ev=undefined; render(); },
+
+  advance(id){
+    const r=S.records.find(x=>x.id===id);
+    if(r&&r.phase<4){ r.phase++; saveRec(r); render(); }
+  },
+
+  startEdit(id,field,v){ S.editSection=field; S._ev=v; render(); setTimeout(()=>{ const el=$('ea'); if(el){ el.focus(); el.setSelectionRange(el.value.length,el.value.length); }},20); },
+  startEdit2(id,field){ const r=S.records.find(x=>x.id===id); A.startEdit(id,field,r?r[field]||'':''); },
+  cancelEdit(){ S.editSection=null; S._ev=undefined; render(); },
+  saveEdit(id,field){
+    const r=S.records.find(x=>x.id===id);
+    if(r){ r[field]=val('ea')??S._ev??''; saveRec(r); }
+    S.editSection=null; S._ev=undefined; render();
+  },
+
+  startCommit(){ S.addingCommit=true; render(); },
+  cancelCommit(){ S.addingCommit=false; render(); },
+  addCommit(id){
+    const t=val('ct'), d=val('cd');
+    if(!t.trim()) return;
+    const r=S.records.find(x=>x.id===id);
+    if(r){ r.commitments=r.commitments||[]; r.commitments.push({id:uid(),text:t,dueDate:d,status:'On Track',updates:[]}); if(r.phase<3)r.phase=3; saveRec(r); }
+    S.addingCommit=false; render();
+  },
+  setCStatus(rid,cid,st){
+    const r=S.records.find(x=>x.id===rid);
+    if(r){ const c=(r.commitments||[]).find(x=>x.id===cid); if(c){ c.status=st; saveRec(r); } }
+  },
+
+  selNote(cid){ S.progressCid=cid; render(); },
+  cancelNote(){ S.progressCid=null; render(); },
+  postNote(rid,cid){
+    const note=val('pn');
+    if(!note.trim()) return;
+    const r=S.records.find(x=>x.id===rid);
+    if(r){ const c=(r.commitments||[]).find(x=>x.id===cid); if(c){ c.updates=c.updates||[]; c.updates.push({id:uid(),date:today(),note,author:S.role==='head'?HEAD:S.role}); if(r.phase<4)r.phase=4; saveRec(r); } }
+    S.progressCid=null; render();
+  },
+
+  submitFeedback(){
+    const member=val('nf-member')||TEAM[0], title=val('nf-title'), date=val('nf-date')||today(), feedback=val('nf-text');
+    if(!title.trim()||!feedback.trim()) return;
+    const newRec={id:uid(),member,phase:1,title,feedback,date,memberResponse:'',sessionDate:'',sessionNotes:'',commitments:[]};
+    S.records.push(newRec);
+    saveRec(newRec);
+    S.view='list'; render();
+  },
+
+  openPins(){ S.pinModal=true; S.pmMode=S.role==='head'?'manage':'self'; S.pmTarget=null; S.pmErr=''; S.pmOk=''; render(); },
+  closePins(){ S.pinModal=false; render(); },
+  pmTab(t){ S.pmMode=t; S.pmErr=''; S.pmOk=''; render(); },
+  pmBack(){ S.pmMode=S.role==='head'?'manage':'self'; S.pmErr=''; S.pmOk=''; render(); },
+  pmSetMember(m){ S.pmTarget=m; S.pmMode='set-member'; S.pmErr=''; S.pmOk=''; render(); },
+  pmClear(m){ delete S.memberPins[m]; savePins(); S.pmOk=`PIN for ${m} has been cleared.`; render(); },
+
+  pmSaveMember(){
+    const nv=val('pm-new'), cv=val('pm-con');
+    if(!nv||nv.length<4){ S.pmErr='PIN must be at least 4 digits.'; render(); return; }
+    if(nv!==cv){ S.pmErr="PINs don't match."; render(); return; }
+    S.memberPins[S.pmTarget]=nv; savePins(); S.pmOk=`PIN for ${S.pmTarget} has been set.`; S.pmErr=''; render();
+  },
+  pmSaveHead(){
+    const cur=val('pm-cur'), nv=val('pm-new'), cv=val('pm-con');
+    if(cur!==headPin()){ S.pmErr='Current PIN is incorrect.'; render(); return; }
+    if(!nv||nv.length<4){ S.pmErr='New PIN must be at least 4 digits.'; render(); return; }
+    if(nv!==cv){ S.pmErr="PINs don't match."; render(); return; }
+    S.memberPins[HEAD_PIN_KEY]=nv; savePins(); S.pmOk='Your PIN has been updated.'; S.pmErr=''; render();
+  },
+  pmSaveSelf(){
+    const existing=S.memberPins[S.role];
+    const cur=val('pm-cur'), nv=val('pm-new'), cv=val('pm-con');
+    if(existing&&cur!==existing){ S.pmErr='Current PIN is incorrect.'; render(); return; }
+    if(!nv||nv.length<4){ S.pmErr='New PIN must be at least 4 digits.'; render(); return; }
+    if(nv!==cv){ S.pmErr="PINs don't match."; render(); return; }
+    S.memberPins[S.role]=nv; savePins(); S.pmOk='PIN saved!'; S.pmErr=''; render();
+  },
+  pmRemove(){
+    const cur=val('pm-del');
+    if(cur!==S.memberPins[S.role]){ S.pmErr='Current PIN is incorrect.'; render(); return; }
+    delete S.memberPins[S.role]; savePins(); S.pmOk='PIN removed.'; S.pmErr=''; render();
+  },
+};
+
+/* ── INIT ───────────────────────────────────────────────────────── */
+render();      // show loading spinner immediately
+loadAll();     // fetch from Firestore
+</script>
+</body>
+</html>
