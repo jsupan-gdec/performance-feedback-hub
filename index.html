@@ -39,7 +39,7 @@ firebase.initializeApp(firebaseConfig);
 const db = firebase.firestore();
 
 /* ── CONSTANTS ─────────────────────────────────────────────────── */
-const TEAM=['Nathan','Joven','Red','Marj'];
+let TEAM=['Nathan','Joven','Red','Marj'];
 const HEAD='Jeimar', HEAD_PIN_DEFAULT='0000', HEAD_PIN_KEY='__head__';
 const PHASES=[
   {id:1,label:'Feedback Sent',icon:'📤'},
@@ -74,19 +74,22 @@ const S={
   pinModal:false,
   pmMode:'manage', pmTarget:null,
   pmErr:'', pmOk:'',
+  teamErr:'',
 };
 
 /* ── FIRESTORE STORAGE ─────────────────────────────────────────── */
 const loadAll = async () => {
   try {
-    const [recSnap, pinsSnap] = await Promise.all([
+    const [recSnap, pinsSnap, teamSnap] = await Promise.all([
       db.collection('records').get(),
-      db.collection('config').doc('pins').get()
+      db.collection('config').doc('pins').get(),
+      db.collection('config').doc('team').get()
     ]);
     S.records = recSnap.docs.map(d => d.data());
     // Sort by date ascending
     S.records.sort((a,b)=>a.date<b.date?-1:1);
     S.memberPins = pinsSnap.exists ? pinsSnap.data() : {};
+    if(teamSnap.exists){const t=teamSnap.data().members;if(Array.isArray(t)&&t.length)TEAM=t;}
     S.loading = false;
     render();
   } catch(e) {
@@ -107,6 +110,12 @@ const saveRec = (record) => {
 const savePins = () => {
   db.collection('config').doc('pins').set(S.memberPins)
     .catch(e => console.error('Pins save failed:', e));
+};
+
+// Save team list to config/team document
+const saveTeam = () => {
+  db.collection('config').doc('team').set({ members: TEAM })
+    .catch(e => console.error('Team save failed:', e));
 };
 
 const headPin = () => S.memberPins[HEAD_PIN_KEY] || HEAD_PIN_DEFAULT;
@@ -222,6 +231,7 @@ const appHtml=()=>{
   const recs=isHead?S.records:S.records.filter(r=>r.member===S.role);
   let main='';
   if(S.view==='new'&&isHead) main=newFeedbackHtml();
+  else if(S.view==='team'&&isHead) main=teamHtml();
   else if(S.view==='detail'&&S.selId){
     const r=S.records.find(r=>r.id===S.selId);
     main=r?detailHtml(r,isHead):`<div style="${emptySt()}">Record not found.</div>`;
@@ -234,6 +244,7 @@ const appHtml=()=>{
       <nav style="margin-top:32px;display:flex;flex-direction:column;gap:4px">
         ${sideBtn('📋','Records',S.view==='list'&&!S.pinModal,'A.goList()')}
         ${isHead?sideBtn('➕','New Feedback',S.view==='new','A.goNew()'):''}
+        ${isHead?sideBtn('👥','Manage Team',S.view==='team','A.goTeam()'):''}
         ${sideBtn('🔐',isHead?'Manage PINs':'My PIN',false,'A.openPins()')}
       </nav>
     </div>
@@ -478,6 +489,39 @@ const newFeedbackHtml=()=>
   </div>
 </div>`;
 
+/* ── TEAM MANAGEMENT ────────────────────────────────────────────── */
+const teamHtml=()=>{
+  const rows=TEAM.map(m=>{
+    const cnt=S.records.filter(r=>r.member===m).length;
+    return `<div style="background:#1a1f35;border:1px solid #2a2d3e;border-radius:10px;padding:14px 18px;display:flex;justify-content:space-between;align-items:center">
+  <div style="display:flex;align-items:center;gap:12px">
+    <div style="width:36px;height:36px;border-radius:50%;background:#c9a227;color:#0a0e1a;display:flex;align-items:center;justify-content:center;font-weight:900;font-size:16px;flex-shrink:0">${esc(m[0])}</div>
+    <div>
+      <div style="font-size:15px;font-weight:700;color:#e0e0e0">${esc(m)}</div>
+      <div style="font-size:12px;color:#666">${cnt} coaching record${cnt!==1?'s':''} · ${S.memberPins[m]?'🔒 PIN set':'🔓 No PIN'}</div>
+    </div>
+  </div>
+  <button onclick="A.removeMember('${esc(m)}')" style="${ghostBtn()};color:#ef4444;border-color:#ef444455">Remove</button>
+</div>`;
+  }).join('');
+  return `<div style="padding:32px 40px;max-width:600px">
+  <h2 style="font-size:26px;font-weight:900;color:#c9a227;margin:0 0 4px">Manage Team</h2>
+  <p style="font-size:13px;color:#666;margin:0 0 24px">${TEAM.length} active member${TEAM.length!==1?'s':''}</p>
+  <div style="display:flex;flex-direction:column;gap:10px;margin-bottom:32px">
+    ${TEAM.length?rows:`<p style="color:#555;font-size:14px;padding:20px 0">No team members yet. Add one below.</p>`}
+  </div>
+  <div style="background:#0f1322;border:1px solid #1e2236;border-radius:12px;padding:24px">
+    <h3 style="font-size:15px;font-weight:700;color:#c9a227;margin:0 0 16px">➕ Add New Member</h3>
+    <label style="${labelSt()}">Full Name</label>
+    <input id="new-member-name" type="text" placeholder="Enter full name…"
+      onkeydown="if(event.key==='Enter')A.addMember()"
+      style="${inputSt()};margin-bottom:12px">
+    ${S.teamErr?`<p style="color:#ef4444;font-size:13px;margin-bottom:10px">⚠ ${esc(S.teamErr)}</p>`:''}
+    <button onclick="A.addMember()" style="${goldBtn()}">Add Member</button>
+  </div>
+</div>`;
+};
+
 /* ── PIN MODAL ──────────────────────────────────────────────────── */
 const pinModalHtml=(isHead)=>{
   const tabs=isHead?`<div style="display:flex;border-bottom:1px solid #1e2236;margin-bottom:20px">
@@ -566,8 +610,29 @@ const A={
 
   signOut(){ S.role=null; S.screen='login'; S.view='list'; S.selId=null; S.pinModal=false; render(); },
   goList(){  S.view='list'; S.selId=null; S.editSection=null; S.addingCommit=false; S.progressCid=null; render(); },
-  goNew(){   S.view='new';  S.newMember=TEAM[0]; render(); },
+  goNew(){   S.view='new';  S.newMember=TEAM[0]||''; render(); },
+  goTeam(){  S.view='team'; S.selId=null; S.editSection=null; S.teamErr=''; render(); },
   setFilter(f){ S.listFilter=f; render(); },
+
+  addMember(){
+    const name=val('new-member-name').trim();
+    if(!name){ S.teamErr='Please enter a name.'; render(); return; }
+    if(TEAM.some(m=>m.toLowerCase()===name.toLowerCase())){ S.teamErr=`"${name}" is already on the team.`; render(); return; }
+    TEAM.push(name);
+    saveTeam();
+    S.teamErr='';
+    render();
+    setTimeout(()=>{ const el=$('new-member-name'); if(el) el.focus(); },20);
+  },
+
+  removeMember(name){
+    if(!confirm(`Remove ${name} from the team?\n\nTheir coaching records will be preserved.`)) return;
+    TEAM=TEAM.filter(m=>m!==name);
+    delete S.memberPins[name];
+    savePins();
+    saveTeam();
+    render();
+  },
 
   openRec(id){ S.selId=id; S.view='detail'; S.detailTab='overview'; S.editSection=null; S.addingCommit=false; S.progressCid=null; S._ev=undefined; render(); },
   tab(t){ S.detailTab=t; S.editSection=null; S.addingCommit=false; S.progressCid=null; S._ev=undefined; render(); },
