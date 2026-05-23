@@ -106,10 +106,24 @@ const saveRec = (record) => {
     .catch(e => console.error('Record save failed:', e));
 };
 
-// Save all pins to config/pins document
-const savePins = () => {
-  db.collection('config').doc('pins').set(S.memberPins)
-    .catch(e => console.error('Pins save failed:', e));
+// Set a single pin field — safe for concurrent sessions
+const savePin = (key, value) => {
+  S.memberPins[key] = value;
+  db.collection('config').doc('pins').set({ [key]: value }, { merge: true })
+    .catch(e => {
+      console.error('Pin save failed:', e);
+      S.pmErr = 'Could not save PIN — check your connection and try again.';
+      S.pmOk = '';
+      render();
+    });
+};
+
+// Delete a single pin field — safe for concurrent sessions
+const clearPin = (key) => {
+  delete S.memberPins[key];
+  db.collection('config').doc('pins')
+    .update({ [key]: firebase.firestore.FieldValue.delete() })
+    .catch(e => console.error('Pin clear failed:', e));
 };
 
 // Save team list to config/team document
@@ -628,8 +642,7 @@ const A={
   removeMember(name){
     if(!confirm(`Remove ${name} from the team?\n\nTheir coaching records will be preserved.`)) return;
     TEAM=TEAM.filter(m=>m!==name);
-    delete S.memberPins[name];
-    savePins();
+    clearPin(name);
     saveTeam();
     render();
   },
@@ -689,20 +702,20 @@ const A={
   pmTab(t){ S.pmMode=t; S.pmErr=''; S.pmOk=''; render(); },
   pmBack(){ S.pmMode=S.role==='head'?'manage':'self'; S.pmErr=''; S.pmOk=''; render(); },
   pmSetMember(m){ S.pmTarget=m; S.pmMode='set-member'; S.pmErr=''; S.pmOk=''; render(); },
-  pmClear(m){ delete S.memberPins[m]; savePins(); S.pmOk=`PIN for ${m} has been cleared.`; render(); },
+  pmClear(m){ clearPin(m); S.pmOk=`PIN for ${m} has been cleared.`; render(); },
 
   pmSaveMember(){
     const nv=val('pm-new'), cv=val('pm-con');
     if(!nv||nv.length<4){ S.pmErr='PIN must be at least 4 digits.'; render(); return; }
     if(nv!==cv){ S.pmErr="PINs don't match."; render(); return; }
-    S.memberPins[S.pmTarget]=nv; savePins(); S.pmOk=`PIN for ${S.pmTarget} has been set.`; S.pmErr=''; render();
+    savePin(S.pmTarget, nv); S.pmOk=`PIN for ${S.pmTarget} has been set.`; S.pmErr=''; render();
   },
   pmSaveHead(){
     const cur=val('pm-cur'), nv=val('pm-new'), cv=val('pm-con');
     if(cur!==headPin()){ S.pmErr='Current PIN is incorrect.'; render(); return; }
     if(!nv||nv.length<4){ S.pmErr='New PIN must be at least 4 digits.'; render(); return; }
     if(nv!==cv){ S.pmErr="PINs don't match."; render(); return; }
-    S.memberPins[HEAD_PIN_KEY]=nv; savePins(); S.pmOk='Your PIN has been updated.'; S.pmErr=''; render();
+    savePin(HEAD_PIN_KEY, nv); S.pmOk='Your PIN has been updated.'; S.pmErr=''; render();
   },
   pmSaveSelf(){
     const existing=S.memberPins[S.role];
@@ -710,12 +723,12 @@ const A={
     if(existing&&cur!==existing){ S.pmErr='Current PIN is incorrect.'; render(); return; }
     if(!nv||nv.length<4){ S.pmErr='New PIN must be at least 4 digits.'; render(); return; }
     if(nv!==cv){ S.pmErr="PINs don't match."; render(); return; }
-    S.memberPins[S.role]=nv; savePins(); S.pmOk='PIN saved!'; S.pmErr=''; render();
+    savePin(S.role, nv); S.pmOk='PIN saved!'; S.pmErr=''; render();
   },
   pmRemove(){
     const cur=val('pm-del');
     if(cur!==S.memberPins[S.role]){ S.pmErr='Current PIN is incorrect.'; render(); return; }
-    delete S.memberPins[S.role]; savePins(); S.pmOk='PIN removed.'; S.pmErr=''; render();
+    clearPin(S.role); S.pmOk='PIN removed.'; S.pmErr=''; render();
   },
 };
 
