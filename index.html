@@ -122,7 +122,7 @@ const savePin = (key, value) => {
 const clearPin = (key) => {
   delete S.memberPins[key];
   db.collection('config').doc('pins')
-    .update({ [key]: firebase.firestore.FieldValue.delete() })
+    .set({ [key]: firebase.firestore.FieldValue.delete() }, { merge: true })
     .catch(e => console.error('Pin clear failed:', e));
 };
 
